@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+# Phase 2: publish the microphone straight to the relay in the cluster.
+[Unit]
+Description=birdmic ffmpeg push to {{ birdmic_push_url }}
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+User={{ birdmic_mediamtx_user }}
+Group={{ birdmic_mediamtx_user }}
+SupplementaryGroups=audio
+ExecStart={{ mediamtx_ffmpeg_cmd | replace('%', '%%') }}
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

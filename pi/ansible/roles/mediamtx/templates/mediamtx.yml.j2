@@ -1,0 +1,64 @@
+# {{ ansible_managed }}
+# MediaMTX {{ birdmic_mediamtx_version }} for birdmic. Keys not listed here keep the
+# defaults of the upstream mediamtx.yml of the same version.
+
+logLevel: {{ birdmic_mediamtx_log_level }}
+logDestinations: [stdout]
+
+readTimeout: 10s
+writeTimeout: 10s
+
+###############################################
+# Authentication (birdmic_auth_*)
+
+authMethod: internal
+authInternalUsers:
+{{ (birdmic_auth_users if birdmic_auth_enabled | bool else birdmic_auth_open_users) | to_nice_yaml(indent=2, sort_keys=false) | trim | indent(2, first=true) }}
+
+###############################################
+# Control API and metrics
+
+api: {{ 'yes' if birdmic_api_enabled | bool else 'no' }}
+apiAddress: :{{ birdmic_api_port }}
+
+metrics: {{ 'yes' if birdmic_metrics_enabled | bool else 'no' }}
+metricsAddress: :{{ birdmic_metrics_port }}
+
+pprof: no
+playback: no
+
+###############################################
+# RTSP
+
+rtsp: yes
+rtspTransports: [{{ birdmic_rtsp_transports | join(', ') }}]
+rtspEncryption: "{{ birdmic_rtsp_encryption }}"
+rtspAddress: :{{ birdmic_rtsp_port }}
+rtspsAddress: :{{ birdmic_rtsps_port }}
+rtspServerKey: {{ birdmic_rtsp_server_key }}
+rtspServerCert: {{ birdmic_rtsp_server_cert }}
+
+###############################################
+# Everything else off
+
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+moq: no
+
+###############################################
+# Paths
+
+paths:
+  {{ birdmic_path }}:
+{% if birdmic_mode == 'serve' %}
+    # ffmpeg is the only process that opens the ALSA device. MediaMTX starts
+    # it with the server and restarts it whenever it exits.
+    runOnInit: >-
+      {{ mediamtx_ffmpeg_cmd }}
+    runOnInitRestart: yes
+{% else %}
+    # birdmic_mode is push: ffmpeg runs as birdmic-push.service instead.
+    source: publisher
+{% endif %}

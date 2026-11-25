@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  author: Daan Geijs
+  description: MediaMTX with an ffmpeg L16 publisher (serve) or ffmpeg push unit
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions: [trixie]
+dependencies:
+  - role: guard

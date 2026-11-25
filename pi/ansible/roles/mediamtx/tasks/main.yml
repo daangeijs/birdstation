@@ -1,0 +1,192 @@
+---
+- name: Validate mode and security settings
+  ansible.builtin.assert:
+    that:
+      - birdmic_mode in ['serve', 'push']
+      - birdmic_mode == 'serve' or birdmic_push_url is match('^rtsps?://')
+      - birdmic_rtsp_encryption in ['no', 'optional', 'strict']
+      - audio_capture_device is defined
+    fail_msg: >-
+      Check birdmic_mode (serve or push), birdmic_push_url (rtsp:// or rtsps://,
+      required in push mode) and birdmic_rtsp_encryption (no, optional, strict).
+      The audio role must run first.
+    quiet: true
+
+- name: Require passwords for named users
+  ansible.builtin.assert:
+    that: >-
+      birdmic_auth_users | rejectattr('user', 'equalto', 'any')
+      | selectattr('pass', 'falsy') | list | length == 0
+    fail_msg: Every non-anonymous entry in birdmic_auth_users needs a pass (use a vault).
+    quiet: true
+  when: birdmic_auth_enabled | bool
+
+- name: Check TLS files for RTSPS
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ birdmic_rtsp_server_key }}"
+    - "{{ birdmic_rtsp_server_cert }}"
+  register: mediamtx_tls
+  when: birdmic_rtsp_encryption != 'no'
+
+- name: Require TLS files for RTSPS
+  ansible.builtin.assert:
+    that: mediamtx_tls.results | map(attribute='stat.exists') | min
+    fail_msg: >-
+      birdmic_rtsp_encryption is {{ birdmic_rtsp_encryption }} but
+      {{ birdmic_rtsp_server_key }} or {{ birdmic_rtsp_server_cert }} is missing on the Pi.
+    quiet: true
+  when: birdmic_rtsp_encryption != 'no'
+
+- name: Build the ffmpeg command
+  vars:
+    local_target: >-
+      {{ ('rtsps://127.0.0.1:' ~ birdmic_rtsps_port) if birdmic_rtsp_encryption == 'strict'
+      else ('rtsp://127.0.0.1:' ~ birdmic_rtsp_port) }}/{{ birdmic_path }}
+    target: "{{ local_target if birdmic_mode == 'serve' else birdmic_push_url }}"
+    transport: "{{ 'tcp' if birdmic_mode == 'serve' else birdmic_push_rtsp_transport }}"
+  ansible.builtin.set_fact:
+    mediamtx_ffmpeg_cmd: >-
+      ffmpeg -nostdin -hide_banner -nostats -loglevel warning
+      -f alsa -thread_queue_size 1024
+      -ac {{ birdmic_capture_channels }} -ar {{ audio_capture_rate }}
+      -i {{ audio_capture_device }}
+      -ac 1 -ar {{ birdmic_output_rate }} -c:a pcm_s16be
+      -f rtsp -rtsp_transport {{ transport }} -pkt_size 1200
+      {{ target }}
+
+- name: Create the mediamtx system user
+  ansible.builtin.user:
+    name: "{{ birdmic_mediamtx_user }}"
+    system: true
+    groups: [audio]
+    append: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+
+- name: Fetch upstream checksums
+  ansible.builtin.uri:
+    url: "{{ birdmic_mediamtx_release_url }}/checksums.sha256"
+    return_content: true
+  register: mediamtx_checksums
+  check_mode: false
+  when: birdmic_mediamtx_check_upstream_checksums | bool
+
+- name: Check the pinned hash against upstream
+  ansible.builtin.assert:
+    that: >-
+      (birdmic_mediamtx_sha256 ~ ' *' ~ mediamtx_tarball) in mediamtx_checksums.content.splitlines()
+    fail_msg: >-
+      birdmic_mediamtx_sha256 does not match checksums.sha256 of
+      {{ birdmic_mediamtx_version }} for {{ mediamtx_tarball }}.
+    quiet: true
+  when: birdmic_mediamtx_check_upstream_checksums | bool
+
+- name: Create install directory
+  ansible.builtin.file:
+    path: "{{ mediamtx_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download MediaMTX
+  ansible.builtin.get_url:
+    url: "{{ birdmic_mediamtx_release_url }}/{{ mediamtx_tarball }}"
+    dest: "{{ mediamtx_install_dir }}/{{ mediamtx_tarball }}"
+    checksum: "sha256:{{ birdmic_mediamtx_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Unpack MediaMTX
+  ansible.builtin.unarchive:
+    src: "{{ mediamtx_install_dir }}/{{ mediamtx_tarball }}"
+    dest: "{{ mediamtx_install_dir }}"
+    remote_src: true
+    include: [mediamtx, LICENSE]
+    creates: "{{ mediamtx_install_dir }}/mediamtx"
+  notify: Restart mediamtx
+
+- name: Link the mediamtx binary
+  ansible.builtin.file:
+    src: "{{ mediamtx_install_dir }}/mediamtx"
+    dest: /usr/local/bin/mediamtx
+    state: link
+    force: true
+  notify: Restart mediamtx
+
+- name: Create config directory
+  ansible.builtin.file:
+    path: /etc/mediamtx
+    state: directory
+    owner: root
+    group: "{{ birdmic_mediamtx_user }}"
+    mode: "0750"
+
+- name: Write mediamtx.yml
+  ansible.builtin.template:
+    src: mediamtx.yml.j2
+    dest: /etc/mediamtx/mediamtx.yml
+    owner: root
+    group: "{{ birdmic_mediamtx_user }}"
+    mode: "0640"
+  notify: Restart mediamtx
+
+- name: Write mediamtx.service
+  ansible.builtin.template:
+    src: mediamtx.service.j2
+    dest: /etc/systemd/system/mediamtx.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mediamtx
+
+- name: Write birdmic-push.service
+  ansible.builtin.template:
+    src: birdmic-push.service.j2
+    dest: /etc/systemd/system/birdmic-push.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart birdmic-push
+  when: birdmic_mode == 'push'
+
+- name: Enable MediaMTX (serve mode)
+  ansible.builtin.systemd_service:
+    name: mediamtx.service
+    enabled: "{{ birdmic_mode == 'serve' }}"
+    state: "{{ 'started' if birdmic_mode == 'serve' else 'stopped' }}"
+    daemon_reload: true
+
+- name: Check for the push unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/birdmic-push.service
+  register: mediamtx_push_unit
+
+- name: Enable the push unit (push mode)
+  ansible.builtin.systemd_service:
+    name: birdmic-push.service
+    enabled: "{{ birdmic_mode == 'push' }}"
+    state: "{{ 'started' if birdmic_mode == 'push' else 'stopped' }}"
+    daemon_reload: true
+  when: mediamtx_push_unit.stat.exists
+
+- name: Apply pending restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the stream to become available
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ birdmic_api_port }}/v3/paths/get/{{ birdmic_path }}"
+    return_content: true
+    status_code: [200, 404]
+  register: mediamtx_path
+  until: mediamtx_path.status == 200 and (mediamtx_path.json.available | default(false))
+  retries: 15
+  delay: 2
+  when:
+    - birdmic_mode == 'serve'
+    - birdmic_api_enabled | bool
+    - not ansible_check_mode

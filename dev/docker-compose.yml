@@ -1,0 +1,31 @@
+# Fake birdmic for local testing on the Mac (Docker Desktop, Colima or OrbStack).
+#   docker compose -f dev/docker-compose.yml up -d
+# Stream: rtsp://<mac-ip>:8554/mic   API: http://<mac-ip>:9997/v3/paths/get/mic
+name: birdmic-dev
+
+x-image: &image bluenviron/mediamtx:1.21.4-ffmpeg@sha256:1fa0abbefb6f181bf0da075c65a75505ee43bb9996e4a4b5fd30a4ab7dea01e6
+
+services:
+  fetch-audio:
+    image: *image
+    entrypoint: ["/bin/sh", "/config/fetch-audio.sh", "/audio"]
+    volumes:
+      - ./config/fetch-audio.sh:/config/fetch-audio.sh:ro
+      - audio:/audio
+
+  fake-birdmic:
+    image: *image
+    command: ["/config/mediamtx.yml"]
+    depends_on:
+      fetch-audio:
+        condition: service_completed_successfully
+    ports:
+      - "8554:8554"
+      - "9997:9997"
+    volumes:
+      - ./config/mediamtx.yml:/config/mediamtx.yml:ro
+      - audio:/audio:ro
+    restart: unless-stopped
+
+volumes:
+  audio:

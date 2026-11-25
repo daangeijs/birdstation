@@ -1,0 +1,80 @@
+---
+# Last role in site.yml. Locks the Pi with raspi-config's overlay file system
+# (overlayroot=tmpfs on the kernel command line) and optionally a read-only
+# /boot/firmware, then reboots.
+
+- name: Read overlay state
+  ansible.builtin.include_tasks: state.yml
+
+- name: Lock the root file system
+  when:
+    - birdmic_readonly | bool
+    - not (readonly_overlay_active | bool)
+  block:
+    - name: Check that overlayroot is installed
+      ansible.builtin.command: dpkg-query -W -f=${Status} overlayroot
+      register: readonly_overlayroot_pkg
+      changed_when: false
+      failed_when: "'install ok installed' not in readonly_overlayroot_pkg.stdout"
+
+    - name: Check that the initramfs contains overlayroot
+      ansible.builtin.shell: set -o pipefail && lsinitramfs {{ birdmic_initramfs | quote }} | grep -q overlayroot
+      args:
+        executable: /bin/bash
+      changed_when: false
+      check_mode: false
+
+    - name: Make /boot/firmware read-only at next boot
+      ansible.builtin.command: raspi-config nonint enable_bootro
+      when:
+        - birdmic_boot_readonly | bool
+        - not (readonly_bootro_configured | bool)
+      changed_when: true
+      notify: Reboot into the read-only root
+
+    - name: Enable the overlay file system
+      ansible.builtin.command: raspi-config nonint enable_overlayfs
+      when: not (readonly_overlay_configured | bool)
+      changed_when: true
+      notify: Reboot into the read-only root
+
+    # Configured earlier but never rebooted (for example an interrupted run).
+    - name: Schedule a reboot for a pending overlay
+      ansible.builtin.debug:
+        msg: Overlay is configured but not active yet; rebooting.
+      when: readonly_overlay_configured | bool
+      changed_when: true
+      notify: Reboot into the read-only root
+
+- name: Apply the reboot
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the overlay after reboot
+  when:
+    - birdmic_readonly | bool
+    - not ansible_check_mode
+  block:
+    - name: Read overlay state after reboot
+      ansible.builtin.include_tasks: state.yml
+
+    - name: Verify the overlay is active
+      ansible.builtin.assert:
+        that: readonly_overlay_active | bool
+        fail_msg: >-
+          The Pi rebooted but / is not an overlay. Check that
+          {{ birdmic_initramfs }} exists and auto_initramfs=1 is in config.txt.
+        quiet: true
+
+- name: Keep the root writable
+  when: not (birdmic_readonly | bool)
+  block:
+    - name: Remove a pending overlay setting
+      ansible.builtin.command: raspi-config nonint disable_overlayfs
+      when: readonly_overlay_configured | bool
+      changed_when: true
+
+    - name: Report writable mode
+      ansible.builtin.debug:
+        msg: >-
+          birdmic_readonly is false: the root stays writable. Run site.yml
+          without -e birdmic_readonly=false to lock it again.

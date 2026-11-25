@@ -1,0 +1,22 @@
+# Web UI. Replace birdnet.example.lan with your own host name and point it at
+# your ingress controller. ingressClassName traefik is the k3s default.
+# For HTTPS, add a tls: section with a certificate Secret (for example from
+# cert-manager) and set security.baseurl in config.yaml to match.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: birdnet-go
+  namespace: birdnet-go
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: birdnet.example.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: birdnet-go
+                port:
+                  number: 8080

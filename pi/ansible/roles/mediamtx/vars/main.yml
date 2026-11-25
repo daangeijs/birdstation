@@ -1,0 +1,3 @@
+---
+mediamtx_tarball: "mediamtx_{{ birdmic_mediamtx_version }}_linux_{{ birdmic_mediamtx_arch }}.tar.gz"
+mediamtx_install_dir: "/opt/mediamtx/{{ birdmic_mediamtx_version }}"

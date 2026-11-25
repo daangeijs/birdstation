@@ -1,0 +1,39 @@
+---
+# Called from site.yml pre_tasks when the overlay is active and
+# birdmic_readonly is false. Turns the overlay off, reboots, and makes
+# /boot/firmware writable again so the other roles can do their work.
+
+- name: Disable the overlay file system
+  ansible.builtin.command: raspi-config nonint disable_overlayfs
+  changed_when: true
+
+- name: Reboot into the writable root
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+
+- name: Read overlay state
+  ansible.builtin.include_tasks: state.yml
+
+- name: Verify the root is writable
+  ansible.builtin.assert:
+    that: not (readonly_overlay_active | bool)
+    fail_msg: Still on an overlay root after reboot; check /boot/firmware/cmdline.txt.
+    quiet: true
+
+- name: Make /boot/firmware writable at next boot
+  ansible.builtin.command: raspi-config nonint disable_bootro
+  when: readonly_bootro_configured | bool
+  changed_when: true
+
+- name: Check the /boot/firmware mount
+  ansible.builtin.command: findmnt -no OPTIONS /boot/firmware
+  register: readonly_boot_opts
+  changed_when: false
+  check_mode: false
+
+- name: Remount /boot/firmware read-write now
+  ansible.builtin.command: mount -o remount,rw /boot/firmware  # noqa: command-instead-of-module (ansible.posix not required)
+  when: "'ro' in readonly_boot_opts.stdout.split(',')"
+  changed_when: true
+
+# Later roles start with the guard role, which checks findmnt itself.

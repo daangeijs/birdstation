@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: birdnet-go
+  namespace: birdnet-go
+  labels:
+    app: birdnet-go
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: birdnet-go
+  template:
+    metadata:
+      labels:
+        app: birdnet-go
+    spec:
+      # Otherwise the Service injects BIRDNET_GO_* variables, which share the
+      # prefix BirdNET-Go reads its own settings from.
+      enableServiceLinks: false
+      initContainers:
+        # BirdNET-Go has no env var for the stream URL or the MQTT password
+        # and writes to its config file at runtime, so render the ConfigMap
+        # into the writable config dir with the secrets filled in.
+        - name: render-config
+          image: ghcr.io/tphakala/birdnet-go:20261031
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              : "${RTSP_URL:?missing in Secret birdnet-go-env}"
+              : "${MQTT_PASSWORD:?missing in Secret birdnet-go-env}"
+              shopt -u patsub_replacement 2>/dev/null || true
+              # Values go inside single-quoted YAML strings: double any quote.
+              rtsp=${RTSP_URL//\'/\'\'}
+              pass=${MQTT_PASSWORD//\'/\'\'}
+              cfg=$(cat /template/config.yaml)
+              cfg=${cfg//'${RTSP_URL}'/"$rtsp"}
+              cfg=${cfg//'${MQTT_PASSWORD}'/"$pass"}
+              printf '%s\n' "$cfg" > /config/config.yaml.tmp
+              mv /config/config.yaml.tmp /config/config.yaml
+          envFrom:
+            - secretRef:
+                name: birdnet-go-env
+          volumeMounts:
+            - name: template
+              mountPath: /template
+              readOnly: true
+            - name: data
+              mountPath: /config
+              subPath: config
+      containers:
+        - name: birdnet-go
+          image: ghcr.io/tphakala/birdnet-go:20261031
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: TZ
+              value: Europe/Amsterdam
+          volumeMounts:
+            - name: data
+              mountPath: /config
+              subPath: config
+            - name: data
+              mountPath: /data
+              subPath: data
+          # The image's own healthcheck allows 120 s to start.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 18
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "3000m"
+      volumes:
+        - name: template
+          configMap:
+            name: birdnet-go-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: birdnet-go-data

@@ -1,0 +1,11 @@
+# Shared config for both fake birdmic variants. docker-compose.yml mounts these
+# files directly; dev/k8s pulls them in through this kustomization, because
+# kustomize refuses to read files outside a kustomization's own directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: fake-birdmic-config
+    files:
+      - mediamtx.yml
+      - fetch-audio.sh

@@ -1,0 +1,139 @@
+---
+- name: Upgrade packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: "{{ 'dist' if birdmic_apt_upgrade | bool else 'no' }}"
+  register: base_upgrade
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ birdmic_base_packages }}"
+    state: present
+    install_recommends: false
+  register: base_packages
+
+# overlayroot ships an initramfs hook; the image boots initramfs7 on a Pi 2,
+# so every installed kernel needs a fresh initramfs before locking.
+- name: Rebuild initramfs images
+  ansible.builtin.command: update-initramfs -u -k all
+  when: base_upgrade is changed or base_packages is changed
+  changed_when: true
+
+- name: Remove packages that are no longer needed
+  ansible.builtin.apt:
+    autoremove: true
+
+- name: Check timezone
+  ansible.builtin.command: timedatectl show -p Timezone --value
+  register: base_timezone
+  changed_when: false
+  check_mode: false
+
+- name: Set timezone
+  ansible.builtin.command: timedatectl set-timezone {{ birdmic_timezone | quote }}
+  when: base_timezone.stdout != birdmic_timezone
+  changed_when: true
+
+- name: List installed unit files
+  ansible.builtin.command: systemctl list-unit-files --no-legend --plain  # noqa: command-instead-of-module (no module lists sockets and timers)
+  register: base_unit_files
+  changed_when: false
+  check_mode: false
+
+- name: Mask unneeded units
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop: "{{ birdmic_masked_units | intersect(base_unit_files.stdout_lines | map('split') | map('first') | list) }}"
+
+- name: Disable cloud-init after first boot
+  ansible.builtin.copy:
+    dest: /etc/cloud/cloud-init.disabled
+    content: "Disabled by birdmic Ansible: first boot is done.\n"
+    owner: root
+    group: root
+    mode: "0644"
+  when: birdmic_disable_cloud_init | bool
+
+- name: Check for rpi-swap
+  ansible.builtin.stat:
+    path: /etc/rpi/swap.conf
+  register: base_rpi_swap
+
+- name: Configure rpi-swap
+  when: base_rpi_swap.stat.exists
+  block:
+    - name: Create swap config directory
+      ansible.builtin.file:
+        path: /etc/rpi/swap.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Set swap mechanism
+      ansible.builtin.copy:
+        dest: /etc/rpi/swap.conf.d/50-birdmic.conf
+        content: |
+          # Managed by birdmic Ansible. Applied at the next boot.
+          [Main]
+          Mechanism={{ birdmic_swap_mechanism }}
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Create journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Keep the journal in RAM
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/50-birdmic.conf
+    content: |
+      # Managed by birdmic Ansible.
+      [Journal]
+      Storage={{ birdmic_journald_storage }}
+      RuntimeMaxUse={{ birdmic_journald_runtime_max_use }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Create timesyncd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/timesyncd.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure NTP servers
+  ansible.builtin.copy:
+    dest: /etc/systemd/timesyncd.conf.d/50-birdmic.conf
+    content: |
+      # Managed by birdmic Ansible.
+      [Time]
+      NTP={{ birdmic_ntp_servers | join(' ') }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart timesyncd
+
+- name: Enable systemd-timesyncd
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd.service
+    enabled: true
+    state: started
+
+- name: Set onboard audio in config.txt
+  ansible.builtin.lineinfile:
+    path: /boot/firmware/config.txt
+    regexp: '^#?\s*dtparam=audio='
+    line: "dtparam=audio={{ 'on' if birdmic_onboard_audio | bool else 'off' }}"

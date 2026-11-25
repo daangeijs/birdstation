@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-birdmic
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Downloads the recording, checks its SHA256 and converts it to WAV.
+        # Same image as the server, so busybox wget and ffmpeg are available.
+        - name: fetch-audio
+          image: bluenviron/mediamtx:1.21.4-ffmpeg@sha256:1fa0abbefb6f181bf0da075c65a75505ee43bb9996e4a4b5fd30a4ab7dea01e6
+          command: ["/bin/sh", "/config/fetch-audio.sh", "/audio"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: audio
+              mountPath: /audio
+      containers:
+        - name: mediamtx
+          image: bluenviron/mediamtx:1.21.4-ffmpeg@sha256:1fa0abbefb6f181bf0da075c65a75505ee43bb9996e4a4b5fd30a4ab7dea01e6
+          args: ["/config/mediamtx.yml"]
+          ports:
+            - name: rtsp
+              containerPort: 8554
+              protocol: TCP
+            - name: api
+              containerPort: 9997
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: rtsp
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v3/paths/get/mic
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: audio
+              mountPath: /audio
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: fake-birdmic-config
+        - name: audio
+          emptyDir:
+            sizeLimit: 64Mi

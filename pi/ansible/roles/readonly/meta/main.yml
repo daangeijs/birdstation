@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  author: Daan Geijs
+  description: Overlay root and read-only boot partition
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions: [trixie]
+# No guard dependency: tasks_from: unlock must run on a locked Pi.
+dependencies: []

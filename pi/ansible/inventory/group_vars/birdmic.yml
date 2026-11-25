@@ -1,0 +1,173 @@
+---
+# All tunables for the birdmic Pi. See docs/interface-contract.md for the
+# values other workstreams depend on (hostname, port, path, audio format).
+
+# DNS name (or IP) of the Pi on your network. Avahi/mDNS is masked below,
+# so give the Pi a DHCP reservation and a local DNS record, or use its IP.
+# Keep inventory/hosts.yml in sync.
+birdmic_fqdn: birdmic.example.lan
+birdmic_timezone: Europe/Amsterdam
+
+# ---------------------------------------------------------------- base
+
+birdmic_apt_upgrade: true
+birdmic_base_packages:
+  - overlayroot     # used by raspi-config's overlay file system
+  - ca-certificates
+
+# Units that are masked when present. Pi 2 has no Wi-Fi or Bluetooth, the
+# name comes from your local DNS (no mDNS needed), and periodic jobs only fill the
+# overlay tmpfs once the root is read-only.
+birdmic_masked_units:
+  - bluetooth.service
+  - hciuart.service
+  - wpa_supplicant.service
+  - triggerhappy.service
+  - triggerhappy.socket
+  - ModemManager.service
+  - avahi-daemon.service
+  - avahi-daemon.socket
+  - udisks2.service
+  - dphys-swapfile.service
+  - apt-daily.timer
+  - apt-daily-upgrade.timer
+  - man-db.timer
+  - e2scrub_all.timer
+  - e2scrub_reap.service
+
+# cloud-init only matters on first boot; skip it afterwards (faster boots).
+birdmic_disable_cloud_init: true
+
+# rpi-swap mechanism (none, zram, zram+file, swapfile, auto). The image
+# default zram+file writes to the SD card; "none" suits a read-only root.
+birdmic_swap_mechanism: none
+
+birdmic_journald_storage: volatile
+birdmic_journald_runtime_max_use: 16M
+
+# Empty list keeps the Debian pool from timesyncd's defaults.
+birdmic_ntp_servers: []
+
+# Onboard audio (snd_bcm2835) is never used; switching it off keeps the
+# USB card alone in /proc/asound. Takes effect after the next reboot.
+birdmic_onboard_audio: false
+
+# ---------------------------------------------------------------- audio
+
+# ALSA card id (as in /proc/asound/cardN/id, e.g. "Headset" or "S3").
+# Empty: use the first USB card with a capture stream.
+birdmic_alsa_card: ""
+birdmic_alsa_device: 0
+# plughw converts sample format and channel count if the card needs it;
+# the rate is always chosen to be native, so ALSA never resamples.
+birdmic_alsa_plugin: plughw
+
+# 0: probe the card and use 48000 if supported, else its highest rate.
+birdmic_capture_rate: 0
+birdmic_capture_channels: 1
+
+# Contract output format (L16, 48 kHz, mono). ffmpeg resamples if needed.
+birdmic_output_rate: 48000
+
+# Simple mixer control for the capture gain. Empty: first control with a
+# capture volume. Set birdmic_capture_gain to "" to leave the gain alone.
+birdmic_mixer_control: ""
+birdmic_capture_gain: "80%"
+
+# ---------------------------------------------------------------- mediamtx
+
+birdmic_mediamtx_version: v1.21.4
+birdmic_mediamtx_arch: armv7
+# From the release's checksums.sha256, verified on 2026-11-18.
+birdmic_mediamtx_sha256: 48a067993e28e409478463dc71d2ee8a82511acebc4956f685ecfeda2b0bd9ae
+birdmic_mediamtx_release_url: "https://github.com/bluenviron/mediamtx/releases/download/{{ birdmic_mediamtx_version }}"
+# Also fetch checksums.sha256 at provisioning time and check the pin is in it.
+birdmic_mediamtx_check_upstream_checksums: true
+
+birdmic_mediamtx_user: mediamtx
+birdmic_mediamtx_log_level: info
+
+birdmic_path: mic
+birdmic_rtsp_port: 8554
+birdmic_rtsps_port: 8322
+birdmic_rtsp_transports: [tcp, udp]
+birdmic_api_enabled: true
+birdmic_api_port: 9997
+birdmic_metrics_enabled: true
+birdmic_metrics_port: 9998
+
+# "no", "optional" or "strict" (RTSPS/SRTP). Anything but "no" needs the key
+# and certificate below to exist on the Pi.
+birdmic_rtsp_encryption: "no"
+birdmic_rtsp_server_key: /etc/mediamtx/server.key
+birdmic_rtsp_server_cert: /etc/mediamtx/server.crt
+
+# serve: ffmpeg publishes to the local MediaMTX, clients pull from the Pi.
+# push:  ffmpeg runs as its own systemd unit and publishes to
+#        birdmic_push_url; the local MediaMTX is stopped.
+birdmic_mode: serve
+birdmic_push_url: ""   # e.g. rtsp://relay.example.lan:8554/birdmic
+birdmic_push_rtsp_transport: tcp
+
+# ---------------------------------------------------------------- auth
+
+# Entries follow the authInternalUsers schema of MediaMTX v1.21.4:
+# user ("any" = anonymous), pass (plain, or "sha256:..."/"argon2:..."),
+# ips (empty = any), permissions (action: publish, read, playback, api,
+# metrics, pprof; optional path).
+#
+# Prototype (birdmic_auth_enabled: false): only the local ffmpeg may
+# publish, everyone on the LAN may read, use the API and scrape metrics.
+birdmic_auth_enabled: false
+birdmic_auth_open_users:
+  - user: any
+    pass: ""
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: publish
+        path: "{{ birdmic_path }}"
+  - user: any
+    pass: ""
+    ips: []
+    permissions:
+      - action: read
+        path: "{{ birdmic_path }}"
+      - action: api
+      - action: metrics
+
+# Hardened users, used when birdmic_auth_enabled is true. Put passwords in a
+# vault (vault_birdmic_*), never in this file. 192.168.1.0/24 is an example:
+# use your own LAN or the cluster nodes' addresses.
+birdmic_auth_users:
+  - user: any
+    pass: ""
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: publish
+        path: "{{ birdmic_path }}"
+      - action: api
+      - action: metrics
+  - user: birdnet
+    pass: "{{ vault_birdmic_birdnet_password | default('') }}"
+    ips: ["192.168.1.0/24"]
+    permissions:
+      - action: read
+        path: "{{ birdmic_path }}"
+  - user: monitor
+    pass: "{{ vault_birdmic_monitor_password | default('') }}"
+    ips: ["192.168.1.0/24"]
+    permissions:
+      - action: api
+      - action: metrics
+
+# ---------------------------------------------------------------- readonly
+
+# true: finish with an overlay (tmpfs) root and reboot. Re-running site.yml
+# on a locked Pi is a no-op. Run with -e birdmic_readonly=false to unlock
+# (disables the overlay and reboots), change things, then run again
+# without it to lock.
+birdmic_readonly: true
+# Also mount /boot/firmware read-only while locked.
+birdmic_boot_readonly: true
+# Pi 2 (BCM2836) boots kernel7.img with this initramfs.
+birdmic_initramfs: /boot/firmware/initramfs7

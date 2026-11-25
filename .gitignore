@@ -1,0 +1,9 @@
+.cache/
+*.img
+*.img.xz
+dev/audio/
+*.retry
+.ansible/
+__pycache__/
+# Real secrets stay out of git (see k8s/birdnet-go/secret.example.yaml)
+k8s/birdnet-go/secret.yaml

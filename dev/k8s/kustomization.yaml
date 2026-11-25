@@ -1,0 +1,19 @@
+# Fake birdmic inside the cluster.
+#   kubectl apply -k dev/k8s
+# BirdNET-Go URL: rtsp://fake-birdmic.birdmic-dev.svc.cluster.local:8554/mic
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: birdmic-dev
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: fake-birdmic
+      app.kubernetes.io/part-of: birdstation
+    includeSelectors: true
+
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - ../config

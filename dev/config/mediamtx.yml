@@ -1,0 +1,54 @@
+# MediaMTX v1.21.4 config for the fake birdmic.
+# Serves the contract stream rtsp://<host>:8554/mic (L16, 48 kHz, mono, RTSP/TCP)
+# and the control API on :9997. Everything else is switched off.
+# Unset keys keep the defaults from the upstream mediamtx.yml of v1.21.4.
+
+logLevel: info
+
+# Control API (scripts/birdmic-status.sh). Unauthenticated, as on the Pi prototype.
+api: yes
+apiAddress: :9997
+
+metrics: no
+pprof: no
+playback: no
+
+rtsp: yes
+rtspTransports: [tcp]
+rtspEncryption: "no"
+rtspAddress: :8554
+
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+moq: no
+
+authMethod: internal
+authInternalUsers:
+  # Only the local ffmpeg may publish.
+  - user: any
+    pass:
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: publish
+        path: mic
+  # Anyone on the network may read the stream and query the API.
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+        path: mic
+      - action: api
+
+paths:
+  mic:
+    # /audio/bird.wav is prepared by fetch-audio.sh. The loop restarts the
+    # recording forever; -re keeps it at real time like a live microphone.
+    runOnInit: >-
+      ffmpeg -nostdin -hide_banner -loglevel warning
+      -re -stream_loop -1 -i /audio/bird.wav
+      -ar 48000 -ac 1 -c:a pcm_s16be
+      -f rtsp -rtsp_transport tcp rtsp://localhost:8554/mic
+    runOnInitRestart: yes

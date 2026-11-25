@@ -1,0 +1,59 @@
+---
+- name: Install audio packages
+  ansible.builtin.apt:
+    name:
+      - alsa-utils
+      - ffmpeg
+    state: present
+    install_recommends: false
+
+- name: Probe the capture card
+  birdmic_alsa_probe:
+    card: "{{ birdmic_alsa_card }}"
+    rate: "{{ birdmic_capture_rate | int }}"
+    target_rate: "{{ birdmic_output_rate | int }}"
+    mixer_control: "{{ birdmic_mixer_control }}"
+  register: audio_probe
+
+- name: Export capture settings
+  ansible.builtin.set_fact:
+    audio_capture_card: "{{ audio_probe.card }}"
+    audio_capture_rate: "{{ audio_probe.capture_rate }}"
+    audio_capture_device: "{{ birdmic_alsa_plugin }}:CARD={{ audio_probe.card }},DEV={{ birdmic_alsa_device }}"
+
+- name: Show capture settings
+  ansible.builtin.debug:
+    msg: >-
+      Card {{ audio_probe.card }} ({{ audio_probe.card_name }}),
+      device {{ audio_capture_device }}, capture {{ audio_probe.capture_rate }} Hz
+      (card rates {{ audio_probe.rates }} ranges {{ audio_probe.ranges }}),
+      output {{ birdmic_output_rate }} Hz, mixer '{{ audio_probe.mixer_control }}'
+
+- name: Set capture gain
+  ansible.builtin.shell: |
+    set -eu
+    before="$(amixer -c "$CARD" sget "$CONTROL")"
+    amixer -q -c "$CARD" sset "$CONTROL" "$GAIN" cap
+    after="$(amixer -c "$CARD" sget "$CONTROL")"
+    if [ "$before" != "$after" ]; then echo changed; fi
+  environment:
+    CARD: "{{ audio_probe.card }}"
+    CONTROL: "{{ audio_probe.mixer_control }}"
+    GAIN: "{{ birdmic_capture_gain }}"
+  register: audio_gain
+  changed_when: "'changed' in audio_gain.stdout"
+  when:
+    - audio_probe.mixer_control | length > 0
+    - birdmic_capture_gain | string | length > 0
+
+- name: Check for saved mixer state
+  ansible.builtin.stat:
+    path: /var/lib/alsa/asound.state
+  register: audio_state
+
+# alsa-restore.service loads this at boot; it has to be on the SD card
+# before the root becomes read-only.
+- name: Save mixer state
+  ansible.builtin.command: alsactl store
+  when: audio_gain is changed or not audio_state.stat.exists
+  changed_when: true

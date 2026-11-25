@@ -1,0 +1,284 @@
+# BirdNET-Go config for the birdmic station. It is an example tuned for one
+# garden in the Netherlands: set your own location, MQTT broker and species
+# lists. Keys not listed here keep the defaults of the release
+# (internal/conf/config.yaml in tphakala/birdnet-go).
+#
+# The init container copies this file to /config/config.yaml on every start
+# and fills in the RTSP_URL and MQTT_PASSWORD placeholders from the birdnet-go-env
+# Secret (see secret.example.yaml). Changes saved in the web UI therefore
+# last until the next restart: make permanent changes here.
+
+# Managed config: tell the one-shot migrations they already ran, so they do
+# not rewrite models.enabled on every start (see models.autoenablemigrated in
+# doc/wiki/configuration-reference.md).
+configversion: 2
+
+logging:
+  timezone: Local
+  # Console only, read it with kubectl logs. The per-module files rotate.
+  file_output:
+    enabled: false
+
+main:
+  name: birdmic
+
+birdnet:
+  # 0.7: reviewed v3.0 detections below 0.7 were right about half the time,
+  # 87 to 100% above. The dynamic threshold (default on) still lets weaker
+  # calls through for a day once a species scored 0.9 or more. Rarities and
+  # out-of-season migrants have their own thresholds in realtime.species.config.
+  threshold: 0.7
+  sensitivity: 1.0
+  overlap: 1.5
+  # Match the CPU limit of the Deployment (0 would use every core of the node).
+  threads: 3
+  # Language of the species names in the UI and MQTT messages.
+  locale: nl
+  # Placeholder location: set your own. The range filter (below) uses it to
+  # decide which species are plausible here this week.
+  latitude: 52.0
+  longitude: 5.8
+  locationconfigured: true
+  modelpath: /data/models/birdnet-v2.4/BirdNET_v2.4_fp32_dfttrunc.onnx
+  modelregion: auto
+  # Geomodel v3, downloaded with BirdNET v3.0. It scores the labels of both
+  # classifiers (v2.4 and v3.0) for this location and week.
+  rangefilter:
+    model: v3
+    modelpath: /data/models/shared/geomodel_v3.0.2_fp16.onnx
+    labelspath: /data/models/shared/geomodel_v3.0.2_labels.txt
+    # 0.1: blocks 6 of 17,252 waarneming.nl observations around the station
+    # (2021-2026), against 4 at 0.01, and drops summer birds once their season
+    # ends (Common Quail 0.087 and Spotted Flycatcher 0.050 in late November).
+    threshold: 0.1
+    passunmappedspecies: false
+
+# Acoustic models. Streams without their own "models:" list run all of them;
+# detections of the same species are merged, keeping the best confidence.
+# Gallery models are installed from the web UI (Settings > Models), which only
+# writes /config/config.yaml: copy the new sections here or the next restart
+# drops them. Model files stay on the PVC.
+models:
+  # v3.0 only since 2026-11-20. With the headset mic, 156 reviewed detections
+  # showed v2.4 on its own was right 3 of 36 times (8%); v3.0 alone 60%, and
+  # 22 of 24 at 0.7 or higher. Re-add "birdnet" (v2.4) to compare again
+  # after the EM272 mic is in.
+  enabled:
+    - birdnet_v3.0     # regional central-europe model, incl. frogs, insects, bats
+  # Gallery downloads, on the PVC next to the database.
+  directory: /data/models
+  autoenablemigrated: true
+
+# BirdNET v3.0 (installed from the gallery). overridethreshold false: the
+# global birdnet.threshold (0.7) applies.
+birdnetv3:
+  modelpath: /data/models/birdnet-v3.0/birdnet_v3.0_central-europe_fp32.onnx
+  labelpath: /data/models/birdnet-v3.0/birdnet_v3.0_central-europe_labels.txt
+  overridethreshold: false
+  threshold: 0.5
+
+realtime:
+  audio:
+    # No sound card in the cluster; audio comes from the RTSP stream below.
+    sources: []
+    # Mains hum from the mic cable (50 Hz plus harmonics up to ~250 Hz) is the
+    # loudest thing in the stream. A 200 Hz high-pass at 24 dB/oct removes it
+    # (50 Hz about -48 dB) and keeps the low birds: Long-eared Owl and
+    # Eagle-Owl hoot at 300 to 400 Hz, Wood Pigeon and Cuckoo at 400 to
+    # 700 Hz. Do not go to 1 to 3 kHz: that silences owls, doves and the
+    # Bittern. passes: 0 turns a filter off.
+    equalizer:
+      enabled: true
+      filters:
+        - type: HighPass
+          frequency: 200
+          q: 0.707
+          passes: 2
+    export:
+      # Only clips around detections are written, never continuous audio.
+      enabled: true
+      path: clips/
+      type: flac
+      retention:
+        policy: age
+        maxage: 14d
+        keepspectrograms: true
+        checkinterval: 60
+
+  rtsp:
+    transport: tcp
+    streams:
+      - name: birdmic
+        url: '${RTSP_URL}'
+        enabled: true
+        type: rtsp
+        transport: tcp
+
+  # Drop a detection (and its clip) when human speech is heard in the clip.
+  # The label-based filter is on by default; the Silero VAD gate is opt-in.
+  # 0.6 is the default VAD threshold since 20261031.
+  privacyfilter:
+    enabled: true
+    # 0.05 fired on noise (0.05 to 0.17); the VAD below catches real speech.
+    confidence: 0.2
+    vad:
+      enabled: true
+      threshold: 0.6
+
+  mqtt:
+    enabled: true
+    # Your MQTT broker, e.g. the Mosquitto add-on of Home Assistant.
+    broker: tcp://mqtt.example.lan:1883
+    topic: birdnet
+    username: birdnet
+    password: '${MQTT_PASSWORD}'
+    retain: true
+    homeassistant:
+      enabled: true
+      discovery_prefix: homeassistant
+      device_name: BirdNET-Go
+
+  monitoring:
+    disk:
+      paths:
+        - /data
+
+  # The range filter is geomodel v3 at threshold 0.1 (see birdnet.rangefilter):
+  # seasonal, and checked against 17,252 waarneming.nl observations around
+  # the station (2021-2026) it blocks only 6. So locals, owls and migrants
+  # need no include any more, and summer birds drop out in winter by themselves.
+  # Only species the geomodel never passes at 0.05 are included, all at 0.85
+  # below. Only species on the Dutch list (waarneming.nl native or incidental
+  # migrant), no escapes.
+  species:
+    include:
+      - Aegolius funereus          # Boreal Owl
+      - Glaucidium passerinum      # Eurasian Pygmy Owl
+      - Bubo scandiacus            # Snowy Owl
+      - Surnia ulula               # Northern Hawk Owl
+      - Emberiza cia               # Rock Bunting
+      - Coracias garrulus          # European Roller
+      - Luscinia luscinia          # Thrush Nightingale
+      - Calandrella brachydactyla  # Greater Short-toed Lark
+      - Ptyonoprogne rupestris     # Eurasian Crag Martin
+      - Tachymarptis melba         # Alpine Swift
+      - Clamator glandarius        # Great Spotted Cuckoo
+      - Tetrax tetrax              # Little Bustard
+      - Monticola saxatilis        # Common Rock Thrush
+      - Pastor roseus              # Rosy Starling
+      - Clanga pomarina            # Lesser Spotted Eagle
+      - Aquila heliaca             # Eastern Imperial Eagle
+    # Not on the Dutch list: escapes, cage birds and species from other
+    # continents that the geomodel rates just above the 0.01 cut-off here.
+    # Exotics that are established in NL (Egyptian Goose, Rose-ringed
+    # Parakeet, raccoon, ...) are kept. Source: species status on waarneming.nl.
+    exclude:
+      - Acridotheres cristatellus  # Crested Myna
+      - Aix sponsa                 # Wood Duck
+      - Alectoris rufa             # Red-legged Partridge
+      - Anas bahamensis            # White-cheeked Pintail
+      - Anser canagicus            # Emperor Goose
+      - Anser cygnoides            # Swan Goose
+      - Bostrychia hagedash        # Hadada Ibis
+      - Branta hutchinsii          # Cackling Goose
+      - Branta sandvicensis        # Hawaiian Goose
+      - Bubalus bubalis            # domestic water buffalo
+      - Buteo japonicus            # Eastern Buzzard
+      - Callonetta leucophrys      # Ringed Teal
+      - Callosciurus erythraeus    # Pallas's squirrel
+      - Cereopsis novaehollandiae  # Cape Barren Goose
+      - Chenonetta jubata          # Maned Duck
+      - Chloephaga picta           # Upland Goose
+      - Chrysolophus pictus        # Golden Pheasant
+      - Cyanochen cyanoptera       # Blue-winged Goose
+      - Cygnus buccinator          # Trumpeter Swan
+      - Cygnus melancoryphus       # Black-necked Swan
+      - Dendrocygna bicolor        # Fulvous Whistling Duck
+      - Eudocimus ruber            # Scarlet Ibis
+      - Euplectes afer             # Yellow-crowned Bishop
+      - Geopelia cuneata           # Diamond Dove
+      - Gracula religiosa          # Common Hill Myna
+      - Haemorhous mexicanus       # House Finch
+      - Haliaeetus pelagicus       # Steller's Sea Eagle
+      - Leiothrix lutea            # Red-billed Leiothrix
+      - Lonchura punctulata        # Scaly-breasted Munia
+      - Lophodytes cucullatus      # Hooded Merganser
+      - Mareca sibilatrix          # Chiloe Wigeon
+      - Melopsittacus undulatus    # Budgerigar
+      - Menelikornis leucotis      # White-cheeked Turaco
+      - Netta peposaca             # Rosy-billed Pochard
+      - Numida meleagris           # Helmeted Guineafowl
+      - Nymphicus hollandicus      # Cockatiel
+      - Odocoileus virginianus     # white-tailed deer
+      - Oxyura jamaicensis         # Ruddy Duck
+      - Pavo cristatus             # Indian Peafowl
+      - Phoenicopterus chilensis   # Chilean Flamingo
+      - Platycercus eximius        # Eastern Rosella
+      - Pycnonotus barbatus        # Common Bulbul
+      - Rana dalmatina             # agile frog
+      - Rhacocleis annulata        # a bush-cricket
+      - Rhea americana             # Greater Rhea
+      - Sciurus carolinensis       # eastern grey squirrel
+      - Serinus canaria            # Atlantic (domestic) Canary
+      - Spatula versicolor         # Silver Teal
+      - Streptopelia roseogrisea   # African Collared Dove
+      - Suthora webbiana           # Vinous-throated Parrotbill
+      - Syrmaticus reevesii        # Reeves's Pheasant
+      - Tadorna cana               # South African Shelduck
+      - Tadorna variegata          # Paradise Shelduck
+      - Taeniopygia guttata        # Zebra Finch
+      - Tamiasciurus hudsonicus    # American red squirrel
+      - Tamiops swinhoei           # Swinhoe's striped squirrel
+      - Threskiornis aethiopicus   # African Sacred Ibis
+      # Sea only, never inland (the geomodel scores all of NL as one coast).
+      - Phoca vitulina             # harbour seal
+      - Halichoerus grypus         # grey seal
+      - Hydrobates leucorhous      # Leach's Storm Petrel
+      - Morus bassanus             # Northern Gannet
+      - Uria aalge                 # Common Guillemot
+      - Alca torda                 # Razorbill
+      - Stercorarius skua          # Great Skua
+      - Stercorarius pomarinus     # Pomarine Skua
+    # Every key here is also a force-include (same as the include list), so
+    # only the included rarities get a stricter threshold. Anything else keyed
+    # here would bypass the seasonal geomodel and be allowed all year.
+    config:
+      Aegolius funereus:  # Boreal Owl
+        threshold: 0.85
+      Glaucidium passerinum:  # Eurasian Pygmy Owl
+        threshold: 0.85
+      Bubo scandiacus:  # Snowy Owl
+        threshold: 0.85
+      Surnia ulula:  # Northern Hawk Owl
+        threshold: 0.85
+      Emberiza cia:  # Rock Bunting
+        threshold: 0.85
+      Coracias garrulus:  # European Roller
+        threshold: 0.85
+      Luscinia luscinia:  # Thrush Nightingale
+        threshold: 0.85
+      Calandrella brachydactyla:  # Greater Short-toed Lark
+        threshold: 0.85
+      Ptyonoprogne rupestris:  # Eurasian Crag Martin
+        threshold: 0.85
+      Tachymarptis melba:  # Alpine Swift
+        threshold: 0.85
+      Clamator glandarius:  # Great Spotted Cuckoo
+        threshold: 0.85
+      Tetrax tetrax:  # Little Bustard
+        threshold: 0.85
+      Monticola saxatilis:  # Common Rock Thrush
+        threshold: 0.85
+      Pastor roseus:  # Rosy Starling
+        threshold: 0.85
+      Clanga pomarina:  # Lesser Spotted Eagle
+        threshold: 0.85
+      Aquila heliaca:  # Eastern Imperial Eagle
+        threshold: 0.85
+
+webserver:
+  port: "8080"
+
+security:
+  # Public URL of the web UI (match the Ingress host).
+  baseurl: https://birdnet.example.lan

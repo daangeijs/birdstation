@@ -1,0 +1,57 @@
+---
+# Provision the birdmic Pi: base OS, audio, MediaMTX, then the read-only root.
+#
+#   ansible-playbook site.yml                          # provision and lock
+#   ansible-playbook site.yml -e birdmic_readonly=false  # unlock (reboots), apply, stay writable
+
+- name: Provision birdmic
+  hosts: birdmic
+  gather_facts: true
+
+  pre_tasks:
+    - name: Detect root file system type
+      ansible.builtin.command: findmnt -no FSTYPE /
+      register: birdmic_rootfs
+      changed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: Unlock the read-only root
+      ansible.builtin.include_role:
+        name: readonly
+        tasks_from: unlock
+      when:
+        - birdmic_rootfs.stdout == "overlay"
+        - not (birdmic_readonly | bool)
+      tags: [always]
+
+    - name: Report a locked Pi
+      ansible.builtin.debug:
+        msg: >-
+          The root file system is a read-only overlay, so nothing is changed
+          (writes would vanish at the next reboot). To change the Pi, run
+          ansible-playbook site.yml -e birdmic_readonly=false, then run it
+          again without that flag to lock it.
+      when:
+        - birdmic_rootfs.stdout == "overlay"
+        - birdmic_readonly | bool
+      tags: [always]
+
+    - name: Stop here on a locked Pi
+      ansible.builtin.meta: end_host
+      when:
+        - birdmic_rootfs.stdout == "overlay"
+        - birdmic_readonly | bool
+      tags: [always]
+
+  roles:
+    - role: base
+      tags: [base]
+    - role: audio
+      tags: [audio]
+    - role: mediamtx
+      tags: [mediamtx]
+    # Must stay last: everything above has to be on the SD card before the
+    # overlay hides further writes.
+    - role: readonly
+      tags: [readonly]

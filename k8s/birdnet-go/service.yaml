@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: birdnet-go
+  namespace: birdnet-go
+  labels:
+    app: birdnet-go
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: birdnet-go

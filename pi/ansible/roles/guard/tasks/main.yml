@@ -1,0 +1,18 @@
+---
+# Fails early when the root is an overlay: anything written now would be
+# gone after the next reboot.
+
+- name: Check the root file system type
+  ansible.builtin.command: findmnt -no FSTYPE /
+  register: guard_rootfs
+  changed_when: false
+  check_mode: false
+
+- name: Refuse to change a read-only root
+  ansible.builtin.assert:
+    that: guard_rootfs.stdout != "overlay"
+    fail_msg: >-
+      The root file system is a read-only overlay; changes would be lost on
+      reboot. Unlock first with ansible-playbook site.yml -e birdmic_readonly=false
+      (or sudo raspi-config nonint disable_overlayfs && sudo reboot).
+    quiet: true

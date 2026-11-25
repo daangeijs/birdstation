@@ -1,0 +1,20 @@
+# One volume, two subPaths: config/ (config.yaml is rewritten from the
+# ConfigMap on every start, the rest is app state such as the backup key)
+# and data/ (SQLite database, detection clips, downloaded models).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: birdnet-go-data
+  namespace: birdnet-go
+  annotations:
+    # The detection history lives here. Only matters with Argo CD: never
+    # prune or delete this volume.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # local-path is the k3s default; use any storage class you have.
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
